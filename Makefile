@@ -2,13 +2,13 @@
 # Copyright (c) 2017-2018, NVIDIA CORPORATION. All rights reserved.
 #
 
-.PHONY: all tools shared static deps install uninstall dist depsclean mostlyclean clean distclean
+.PHONY: all tools shared static install uninstall dist mostlyclean clean distclean
 .DEFAULT_GOAL := all
-STRIP  := @echo skipping: strip
+
 ##### Global variables #####
 
-WITH_LIBELF  ?= yes
-WITH_TIRPC   ?= yes
+WITH_LIBELF  ?= no
+WITH_TIRPC   ?= no
 WITH_SECCOMP ?= yes
 
 ##### Global definitions #####
@@ -16,15 +16,14 @@ WITH_SECCOMP ?= yes
 export prefix      = /usr
 export exec_prefix = $(prefix)
 export bindir      = $(exec_prefix)/bin
-export libdir      = $(exec_prefix)/lib64
+export libdir      = $(exec_prefix)/lib
 export docdir      = $(prefix)/share/doc
-export libdbgdir   = $(prefix)/lib64/debug$(libdir)
+export libdbgdir   = $(prefix)/lib/debug$(libdir)
 export includedir  = $(prefix)/include
 export pkgconfdir  = $(libdir)/pkgconfig
 
 export PKG_DIR     ?= $(CURDIR)/pkg
 export SRCS_DIR    ?= $(CURDIR)/src
-export DEPS_DIR    ?= $(CURDIR)/deps
 export DIST_DIR    ?= $(CURDIR)/dist
 export MAKE_DIR    ?= $(CURDIR)/mk
 export DEBUG_DIR   ?= $(CURDIR)/.debug
@@ -120,9 +119,9 @@ LDFLAGS  := -Wl,-zrelro -Wl,-znow -Wl,-zdefs -Wl,--gc-sections $(LDFLAGS)
 LDLIBS   := $(LDLIBS)
 
 # Library flags (recursively expanded to handle target-specific flags)
-LIB_CPPFLAGS       = -DNV_LINUX -isystem $(DEPS_DIR)$(includedir) -include $(BUILD_DEFS)
+LIB_CPPFLAGS       = -DNV_LINUX -include $(BUILD_DEFS)
 LIB_CFLAGS         = -fPIC
-LIB_LDFLAGS        = -L$(DEPS_DIR)$(libdir) -shared -Wl,-soname=$(LIB_SONAME)
+LIB_LDFLAGS        = -shared -Wl,-soname=$(LIB_SONAME)
 # LIB_LDLIBS_STATIC  = -l:libnvidia-modprobe-utils.a
 LIB_LDLIBS_SHARED  = -ldl -lcap -ltirpc
 ifeq ($(WITH_LIBELF), yes)
@@ -132,7 +131,7 @@ else
 LIB_LDLIBS_STATIC  += -l:libelf.a
 endif
 ifeq ($(WITH_TIRPC), yes)
-LIB_CPPFLAGS       += -isystem $(DEPS_DIR)$(includedir)/tirpc -DWITH_TIRPC
+LIB_CPPFLAGS       += -DWITH_TIRPC
 # LIB_LDLIBS_STATIC  += -l:libtirpc.a
 LIB_LDLIBS_SHARED  += -lpthread
 endif
@@ -176,15 +175,15 @@ $(LIB_RPC_SRCS): $(LIB_RPC_SPEC)
 	$(RM) $@
 	cd $(dir $@) && $(RPCGEN) $(RPCGENFLAGS) -C -M -N -o $(notdir $@) $(LIB_RPC_SPEC)
 
-$(LIB_OBJS): %.lo: %.c | deps
+$(LIB_OBJS): %.lo: %.c
 	$(CC) $(LIB_CFLAGS) $(LIB_CPPFLAGS) -MMD -MF $*.d -c $(OUTPUT_OPTION) $<
 
-$(BIN_OBJS): %.o: %.c | shared
+$(BIN_OBJS): %.o: %.c
 	$(CC) $(BIN_CFLAGS) $(BIN_CPPFLAGS) -MMD -MF $*.d -c $(OUTPUT_OPTION) $<
 
 -include $(DEPENDENCIES)
 
-$(LIB_SHARED): $(LIB_OBJS)
+$(LIB_SHARED): $(BUILD_DEFS) $(SRCS_DIR)/driver_rpc.h $(LIB_OBJS)
 	$(MKDIR) -p $(DEBUG_DIR)
 	$(CC) $(LIB_CFLAGS) $(LIB_CPPFLAGS) $(LIB_LDFLAGS) $(OUTPUT_OPTION) $^ $(LIB_SCRIPT) $(LIB_LDLIBS)
 	$(OBJCPY) --only-keep-debug $@ $(LIB_SONAME)
@@ -198,7 +197,7 @@ $(LIB_STATIC_OBJ): $(LIB_OBJS)
 	$(OBJCPY) --localize-hidden $@
 	$(STRIP) --strip-unneeded -R .comment $@
 
-$(BIN_NAME): $(BIN_OBJS)
+$(BIN_NAME): $(BUILD_DEFS) $(SRCS_DIR)/driver_rpc.h $(LIB_SHARED) $(BIN_OBJS)
 	$(CC) $(BIN_CFLAGS) $(BIN_CPPFLAGS) $(BIN_LDFLAGS) $(OUTPUT_OPTION) $^ $(BIN_SCRIPT) $(BIN_LDLIBS)
 	$(STRIP) --strip-unneeded -R .comment $@
 
@@ -219,17 +218,6 @@ shared: $(LIB_SHARED)
 
 static: $(LIB_STATIC)($(LIB_STATIC_OBJ))
 
-deps: export DESTDIR:=$(DEPS_DIR)
-deps: $(LIB_RPC_SRCS) $(BUILD_DEFS)
-	$(MKDIR) -p $(DEPS_DIR)
-	# $(MAKE) -f $(MAKE_DIR)/nvidia-modprobe.mk install
-ifeq ($(WITH_LIBELF), no)
-	# $(MAKE) -f $(MAKE_DIR)/elftoolchain.mk install
-endif
-ifeq ($(WITH_TIRPC), yes)
-	# $(MAKE) -f $(MAKE_DIR)/libtirpc.mk install
-endif
-
 install: all
 	$(INSTALL) -d -m 755 $(addprefix $(DESTDIR),$(includedir) $(bindir) $(libdir) $(docdir) $(libdbgdir) $(pkgconfdir))
 	# Install header files
@@ -237,8 +225,7 @@ install: all
 	# Install library files
 	$(INSTALL) -m 644 $(LIB_STATIC) $(DESTDIR)$(libdir)
 	$(INSTALL) -m 755 $(LIB_SHARED) $(DESTDIR)$(libdir)
-	$(LN) -sf $(LIB_SONAME) $(DESTDIR)$(libdir)/$(LIB_SYMLINK)
-	$(LDCONFIG) -n $(DESTDIR)$(libdir)
+	$(LN) -sf $(LIB_SHARED) $(DESTDIR)$(libdir)/$(LIB_SYMLINK)
 	# Install debugging symbols
 	# $(INSTALL) -m 644 $(DEBUG_DIR)/$(LIB_SONAME) $(DESTDIR)$(libdbgdir)
 	# Install configuration files
@@ -268,23 +255,12 @@ dist: install
 	$(TAR) --numeric-owner --owner=0 --group=0 -C $(dir $(DESTDIR)) -caf $(DESTDIR)_$(ARCH).tar.xz $(notdir $(DESTDIR))
 	$(RM) -r $(DESTDIR)
 
-depsclean:
-	$(RM) $(BUILD_DEFS)
-	-$(MAKE) -f $(MAKE_DIR)/nvidia-modprobe.mk clean
-ifeq ($(WITH_LIBELF), no)
-	-$(MAKE) -f $(MAKE_DIR)/elftoolchain.mk clean
-endif
-ifeq ($(WITH_TIRPC), yes)
-	-$(MAKE) -f $(MAKE_DIR)/libtirpc.mk clean
-endif
-
 mostlyclean:
 	$(RM) $(LIB_OBJS) $(LIB_STATIC_OBJ) $(BIN_OBJS) $(DEPENDENCIES)
 
-clean: mostlyclean depsclean
+clean: mostlyclean
 
 distclean: clean
-	$(RM) -r $(DEPS_DIR) $(DIST_DIR) $(DEBUG_DIR)
 	$(RM) $(LIB_RPC_SRCS) $(LIB_STATIC) $(LIB_SHARED) $(BIN_NAME)
 
 deb: DESTDIR:=$(DIST_DIR)/$(LIB_NAME)_$(VERSION)_$(ARCH)

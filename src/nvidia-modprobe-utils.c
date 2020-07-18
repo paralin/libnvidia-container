@@ -1,3 +1,29 @@
+/*
+ * Copyright (c) 2013, NVIDIA CORPORATION.
+ *
+ * Permission is hereby granted, free of charge, to any person
+ * obtaining a copy of this software and associated documentation
+ * files (the "Software"), to deal in the Software without
+ * restriction, including without limitation the rights to use, copy,
+ * modify, merge, publish, distribute, sublicense, and/or sell copies
+ * of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ *
+ * This file provides utility functions on Linux for loading the
+ * NVIDIA kernel module and creating NVIDIA device files.
+ */
 
 #if defined(NV_LINUX)
 
@@ -27,9 +53,6 @@
 #define NV_NVIDIA_MODULE_NAME "nvidia"
 #define NV_PROC_REGISTRY_PATH "/proc/driver/nvidia/params"
 
-#define NV_NMODULE_NVIDIA_MODULE_NAME "nvidia%d"
-#define NV_NMODULE_PROC_REGISTRY_PATH "/proc/driver/nvidia/%d/params"
-
 #define NV_UVM_MODULE_NAME "nvidia-uvm"
 #define NV_UVM_DEVICE_NAME "/dev/nvidia-uvm"
 #define NV_UVM_TOOLS_DEVICE_NAME "/dev/nvidia-uvm-tools"
@@ -40,6 +63,9 @@
 
 #define NV_NVLINK_MODULE_NAME "nvidia-nvlink"
 #define NV_NVLINK_PROC_PERM_PATH "/proc/driver/nvidia-nvlink/permissions"
+
+#define NV_NVSWITCH_MODULE_NAME "nvidia-nvswitch"
+#define NV_NVSWITCH_PROC_PERM_PATH "/proc/driver/nvidia-nvswitch/permissions"
 
 #define NV_DEVICE_FILE_MODE_MASK (S_IRWXU|S_IRWXG|S_IRWXO)
 #define NV_DEVICE_FILE_MODE (S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH)
@@ -53,84 +79,6 @@
 #define NV_PCI_VENDOR_ID    0x10DE
 
 #define NV_MIN(a, b) (((a) < (b)) ? (a) : (b))
-
-/*
- * Construct the nvidia kernel module name based on the input
- * module instance provided.  If an error occurs, the null
- * terminator will be written to nv_module_name[0].
- */
-static __inline__ void assign_nvidia_kernel_module_name
-(
-    char nv_module_name[NV_MAX_MODULE_NAME_SIZE],
-    int module_instance
-)
-{
-    int ret;
-
-    if (is_multi_module(module_instance))
-    {
-        ret = snprintf(nv_module_name, NV_MAX_MODULE_NAME_SIZE,
-                       NV_NMODULE_NVIDIA_MODULE_NAME, module_instance);
-    }
-    else
-    {
-        ret = snprintf(nv_module_name, NV_MAX_MODULE_NAME_SIZE,
-                       NV_NVIDIA_MODULE_NAME);
-    }
-
-    if (ret <= 0)
-    {
-        goto fail;
-    }
-
-    nv_module_name[NV_MAX_MODULE_NAME_SIZE - 1] = '\0';
-
-    return;
-
-fail:
-
-    nv_module_name[0] = '\0';
-}
-
-
-/*
- * Construct the proc registry path name based on the input
- * module instance provided.  If an error occurs, the null
- * terminator will be written to proc_path[0].
- */
-static __inline__ void assign_proc_registry_path
-(
-    char proc_path[NV_MAX_PROC_REGISTRY_PATH_SIZE],
-    int module_instance
-)
-{
-    int ret;
-
-    if (is_multi_module(module_instance))
-    {
-        ret = snprintf(proc_path, NV_MAX_PROC_REGISTRY_PATH_SIZE,
-                       NV_NMODULE_PROC_REGISTRY_PATH, module_instance);
-    }
-    else
-    {
-        ret = snprintf(proc_path, NV_MAX_PROC_REGISTRY_PATH_SIZE,
-                       NV_PROC_REGISTRY_PATH);
-    }
-
-    if (ret <= 0)
-    {
-        goto fail;
-    }
-
-    proc_path[NV_MAX_PROC_REGISTRY_PATH_SIZE - 1] = '\0';
-
-    return;
-
-fail:
-
-    proc_path[0] = '\0';
-}
-
 
 /*
  * Just like strcmp(3), except that differences between '-' and '_' are
@@ -370,18 +318,20 @@ static int modprobe_helper(const int print_errors, const char *module_name)
             return 0;
 
         default:
-            if (waitpid(pid, &status, 0) < 0)
-            {
-                return 0;
-            }
-            if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
-            {
-                return 1;
-            }
-            else
-            {
-                return 0;
-            }
+            /*
+             * waitpid(2) is not always guaranteed to return success even if
+             * the child terminated normally.  For example, if the process
+             * explicitly configured the handling of the SIGCHLD signal
+             * to SIG_IGN, then waitpid(2) will instead block until all
+             * children terminate and return the error ECHILD, regardless
+             * of the child's exit codes.
+             *
+             * Hence, ignore waitpid(2) error codes and instead check
+             * whether the desired kernel module is loaded.
+             */
+            waitpid(pid, NULL, 0);
+
+            return is_kernel_module_loaded(module_name);
     }
 
     return 1;
@@ -391,13 +341,9 @@ static int modprobe_helper(const int print_errors, const char *module_name)
 /*
  * Attempt to load an NVIDIA kernel module
  */
-int nvidia_modprobe(const int print_errors, int module_instance)
+int nvidia_modprobe(const int print_errors)
 {
-    char nv_module_name[NV_MAX_MODULE_NAME_SIZE];
-
-    assign_nvidia_kernel_module_name(nv_module_name, module_instance);
-
-    return modprobe_helper(print_errors, nv_module_name);
+    return modprobe_helper(print_errors, NV_NVIDIA_MODULE_NAME);
 }
 
 
@@ -494,24 +440,22 @@ static int get_file_state_helper(
     return state;
 }
 
-int nvidia_get_file_state(int minor, int module_instance)
+int nvidia_get_file_state(int minor)
 {
     char path[NV_MAX_CHARACTER_DEVICE_FILE_STRLEN];
-    char proc_path[NV_MAX_PROC_REGISTRY_PATH_SIZE];
     mode_t mode;
     uid_t uid;
     gid_t gid;
     int modification_allowed;
     int state = 0;
 
-    assign_device_file_name(path, minor, module_instance);
-    assign_proc_registry_path(proc_path, module_instance);
+    assign_device_file_name(path, minor);
 
     init_device_file_parameters(&uid, &gid, &mode, &modification_allowed,
-                                proc_path);
+                                NV_PROC_REGISTRY_PATH);
 
     state = get_file_state_helper(path, NV_MAJOR_DEVICE_NUMBER, minor,
-                                  proc_path, uid, gid, mode);
+                                  NV_PROC_REGISTRY_PATH, uid, gid, mode);
 
     return state;
 }
@@ -522,8 +466,8 @@ int nvidia_get_file_state(int minor, int module_instance)
  * permissions.  Returns 1 if the file is successfully created; returns 0
  * if the file could not be created.
  */
-int mknod_helper(int major, int minor, const char *path,
-                 const char *proc_path)
+static int mknod_helper(int major, int minor, const char *path,
+                        const char *proc_path)
 {
     dev_t dev = NV_MAKE_DEVICE(major, minor);
     mode_t mode;
@@ -616,15 +560,13 @@ int mknod_helper(int major, int minor, const char *path,
  * Attempt to create a device file with the specified minor number for
  * the specified NVIDIA module instance.
  */
-int nvidia_mknod(int minor, int module_instance)
+int nvidia_mknod(int minor)
 {
     char path[NV_MAX_CHARACTER_DEVICE_FILE_STRLEN];
-    char proc_path[NV_MAX_PROC_REGISTRY_PATH_SIZE];
 
-    assign_device_file_name(path, minor, module_instance);
-    assign_proc_registry_path(proc_path, module_instance);
+    assign_device_file_name(path, minor);
 
-    return mknod_helper(NV_MAJOR_DEVICE_NUMBER, minor, path, proc_path);
+    return mknod_helper(NV_MAJOR_DEVICE_NUMBER, minor, path, NV_PROC_REGISTRY_PATH);
 }
 
 
@@ -633,7 +575,7 @@ int nvidia_mknod(int minor, int module_instance)
  * device with the specified name.  Returns the major number on success,
  * or -1 on failure.
  */
-int get_chardev_major(const char *name)
+static int get_chardev_major(const char *name)
 {
     int ret = -1;
     char line[NV_MAX_LINE_LENGTH];
@@ -743,13 +685,9 @@ int nvidia_modeset_modprobe(void)
  */
 int nvidia_modeset_mknod(void)
 {
-    char proc_path[NV_MAX_PROC_REGISTRY_PATH_SIZE];
-
-    assign_proc_registry_path(proc_path, NV_MODULE_INSTANCE_NONE);
-
     return mknod_helper(NV_MAJOR_DEVICE_NUMBER,
                         NV_MODESET_MINOR_DEVICE_NUM,
-                        NV_MODESET_DEVICE_NAME, proc_path);
+                        NV_MODESET_DEVICE_NAME, NV_PROC_REGISTRY_PATH);
 }
 
 /*
@@ -770,25 +708,62 @@ int nvidia_nvlink_mknod(void)
                         NV_NVLINK_PROC_PERM_PATH);
 }
 
-int nvidia_vgpu_vfio_mknod(int minor_num)
+/*
+ * Attempt to create the NVIDIA NVSwitch driver device files.
+ */
+int nvidia_nvswitch_mknod(int minor)
 {
-    int major = get_chardev_major(NV_VGPU_VFIO_MODULE_NAME);
-    char vgpu_dev_name[NV_MAX_CHARACTER_DEVICE_FILE_STRLEN];
-    char proc_path[NV_MAX_PROC_REGISTRY_PATH_SIZE];
+    int major = 0;
+    char name[NV_MAX_CHARACTER_DEVICE_FILE_STRLEN];
+    int ret;
+
+    major = get_chardev_major(NV_NVSWITCH_MODULE_NAME);
 
     if (major < 0)
     {
         return 0;
     }
 
-    assign_proc_registry_path(proc_path, NV_MODULE_INSTANCE_NONE);
+    if (minor == NV_NVSWITCH_CTL_MINOR)
+    {
+        ret = snprintf(name, NV_MAX_CHARACTER_DEVICE_FILE_STRLEN,
+                       NV_NVSWITCH_CTL_NAME);
+    }
+    else
+    {
+        ret = snprintf(name, NV_MAX_CHARACTER_DEVICE_FILE_STRLEN,
+                       NV_NVSWITCH_DEVICE_NAME, minor);
+    }
 
-    snprintf(vgpu_dev_name, NV_MAX_CHARACTER_DEVICE_FILE_STRLEN,
-             NV_VGPU_VFIO_DEVICE_NAME, minor_num);
+    if (ret <= 0)
+    {
+        return 0;
+    }
+
+    return mknod_helper(major, minor, name, NV_NVSWITCH_PROC_PERM_PATH);
+}
+
+int nvidia_vgpu_vfio_mknod(int minor_num)
+{
+    int major = get_chardev_major(NV_VGPU_VFIO_MODULE_NAME);
+    char vgpu_dev_name[NV_MAX_CHARACTER_DEVICE_FILE_STRLEN];
+    int ret;
+
+    if (major < 0)
+    {
+        return 0;
+    }
+
+    ret = snprintf(vgpu_dev_name, NV_MAX_CHARACTER_DEVICE_FILE_STRLEN,
+                   NV_VGPU_VFIO_DEVICE_NAME, minor_num);
+    if (ret <= 0)
+    {
+        return 0;
+    }
 
     vgpu_dev_name[NV_MAX_CHARACTER_DEVICE_FILE_STRLEN - 1] = '\0';
 
-    return mknod_helper(major, minor_num, vgpu_dev_name, proc_path);
+    return mknod_helper(major, minor_num, vgpu_dev_name, NV_PROC_REGISTRY_PATH);
 }
 
 #endif /* NV_LINUX */
