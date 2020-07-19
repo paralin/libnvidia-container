@@ -41,7 +41,6 @@ RUN make distclean && make -j"$(nproc)"
 ENV DIST_DIR /dist
 VOLUME $DIST_DIR
 CMD bash -c " \
-        export DISTRIB=$(lsb_release -c -s); \
         export SECTION="" \
         make dist; \
         make deb; \

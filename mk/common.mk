@@ -21,7 +21,7 @@ DOCKER   ?= docker
 UID      := $(shell id -u)
 GID      := $(shell id -g)
 DATE     := $(shell date -u --iso-8601=minutes)
-REVISION := $(shell git rev-parse HEAD)
+REVISION := 61f82bf25f0b3afaa75c6df8a0a6551ecfdf81f4
 COMPILER := $(realpath $(shell which $(CC)))
 PLATFORM ?= $(shell uname -m)
 

@@ -4,21 +4,21 @@
 
 .PHONY: all tools shared static deps install uninstall dist depsclean mostlyclean clean distclean
 .DEFAULT_GOAL := all
-
+STRIP  := @echo skipping: strip
 ##### Global variables #####
 
-WITH_LIBELF  ?= no
-WITH_TIRPC   ?= no
+WITH_LIBELF  ?= yes
+WITH_TIRPC   ?= yes
 WITH_SECCOMP ?= yes
 
 ##### Global definitions #####
 
-export prefix      = /usr/local
+export prefix      = /usr
 export exec_prefix = $(prefix)
 export bindir      = $(exec_prefix)/bin
-export libdir      = $(exec_prefix)/lib
+export libdir      = $(exec_prefix)/lib64
 export docdir      = $(prefix)/share/doc
-export libdbgdir   = $(prefix)/lib/debug$(libdir)
+export libdbgdir   = $(prefix)/lib64/debug$(libdir)
 export includedir  = $(prefix)/include
 export pkgconfdir  = $(libdir)/pkgconfig
 
@@ -52,6 +52,8 @@ LIB_SRCS     := $(SRCS_DIR)/driver.c        \
                 $(SRCS_DIR)/error_generic.c \
                 $(SRCS_DIR)/error.c         \
                 $(SRCS_DIR)/ldcache.c       \
+                $(SRCS_DIR)/pci-sysfs.c     \
+                $(SRCS_DIR)/nvidia-modprobe-utils.c \
                 $(SRCS_DIR)/nvc.c           \
                 $(SRCS_DIR)/nvc_ldcache.c   \
                 $(SRCS_DIR)/nvc_info.c      \
@@ -121,8 +123,8 @@ LDLIBS   := $(LDLIBS)
 LIB_CPPFLAGS       = -DNV_LINUX -isystem $(DEPS_DIR)$(includedir) -include $(BUILD_DEFS)
 LIB_CFLAGS         = -fPIC
 LIB_LDFLAGS        = -L$(DEPS_DIR)$(libdir) -shared -Wl,-soname=$(LIB_SONAME)
-LIB_LDLIBS_STATIC  = -l:libnvidia-modprobe-utils.a
-LIB_LDLIBS_SHARED  = -ldl -lcap
+# LIB_LDLIBS_STATIC  = -l:libnvidia-modprobe-utils.a
+LIB_LDLIBS_SHARED  = -ldl -lcap -ltirpc
 ifeq ($(WITH_LIBELF), yes)
 LIB_CPPFLAGS       += -DWITH_LIBELF
 LIB_LDLIBS_SHARED  += -lelf
@@ -131,7 +133,7 @@ LIB_LDLIBS_STATIC  += -l:libelf.a
 endif
 ifeq ($(WITH_TIRPC), yes)
 LIB_CPPFLAGS       += -isystem $(DEPS_DIR)$(includedir)/tirpc -DWITH_TIRPC
-LIB_LDLIBS_STATIC  += -l:libtirpc.a
+# LIB_LDLIBS_STATIC  += -l:libtirpc.a
 LIB_LDLIBS_SHARED  += -lpthread
 endif
 ifeq ($(WITH_SECCOMP), yes)
@@ -146,7 +148,7 @@ LIB_LDLIBS_SHARED  += $(LDLIBS)
 LIB_LDLIBS         = $(LIB_LDLIBS_STATIC) $(LIB_LDLIBS_SHARED)
 
 # Binary flags (recursively expanded to handle target-specific flags)
-BIN_CPPFLAGS       = -include $(BUILD_DEFS) $(CPPFLAGS)
+BIN_CPPFLAGS       = -include $(BUILD_DEFS) $(CPPFLAGS) -DWITH_TIRPC
 BIN_CFLAGS         = -I$(SRCS_DIR) -fPIE -flto $(CFLAGS)
 BIN_LDFLAGS        = -L. -pie $(LDFLAGS) -Wl,-rpath='$$ORIGIN/../$$LIB'
 BIN_LDLIBS         = -l:$(LIB_SHARED) -lcap $(LDLIBS)
@@ -220,12 +222,12 @@ static: $(LIB_STATIC)($(LIB_STATIC_OBJ))
 deps: export DESTDIR:=$(DEPS_DIR)
 deps: $(LIB_RPC_SRCS) $(BUILD_DEFS)
 	$(MKDIR) -p $(DEPS_DIR)
-	$(MAKE) -f $(MAKE_DIR)/nvidia-modprobe.mk install
+	# $(MAKE) -f $(MAKE_DIR)/nvidia-modprobe.mk install
 ifeq ($(WITH_LIBELF), no)
-	$(MAKE) -f $(MAKE_DIR)/elftoolchain.mk install
+	# $(MAKE) -f $(MAKE_DIR)/elftoolchain.mk install
 endif
 ifeq ($(WITH_TIRPC), yes)
-	$(MAKE) -f $(MAKE_DIR)/libtirpc.mk install
+	# $(MAKE) -f $(MAKE_DIR)/libtirpc.mk install
 endif
 
 install: all
@@ -238,7 +240,7 @@ install: all
 	$(LN) -sf $(LIB_SONAME) $(DESTDIR)$(libdir)/$(LIB_SYMLINK)
 	$(LDCONFIG) -n $(DESTDIR)$(libdir)
 	# Install debugging symbols
-	$(INSTALL) -m 644 $(DEBUG_DIR)/$(LIB_SONAME) $(DESTDIR)$(libdbgdir)
+	# $(INSTALL) -m 644 $(DEBUG_DIR)/$(LIB_SONAME) $(DESTDIR)$(libdbgdir)
 	# Install configuration files
 	$(MAKE_DIR)/$(LIB_PKGCFG).in "$(strip $(VERSION))" "$(strip $(LIB_LDLIBS_SHARED))" > $(DESTDIR)$(pkgconfdir)/$(LIB_PKGCFG)
 	# Install binary files

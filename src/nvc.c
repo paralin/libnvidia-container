@@ -14,8 +14,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#include <pci-enum.h>
-#include <nvidia-modprobe-utils.h>
+#include "pci-enum.h"
+#include "nvidia-modprobe-utils.h"
 
 #include "nvc_internal.h"
 
